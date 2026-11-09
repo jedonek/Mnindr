@@ -24,3 +24,12 @@ export const getMessages=(matchId:string)=>request<ChatMessage[]>(`/matches/${en
 export const sendMessage=(matchId:string,text:string)=>request<ChatMessage>(`/matches/${encodeURIComponent(matchId)}/messages`,'POST',{text});
 export const blockUser=(id:string)=>request<void>(`/users/${encodeURIComponent(id)}/block`,'POST');
 export const reportUser=(id:string,reason:ReportReason)=>request<void>(`/users/${encodeURIComponent(id)}/report`,'POST',{reason});
+
+// Veřejná WebSocket URL používá stejný origin jako REST API.
+// Vite proxy níže podporuje /api/ws během lokálního vývoje.
+export function websocketUrl(): string {
+ const root = BASE || window.location.origin;
+ const url = new URL('/api/ws', root);
+ url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+ return url.toString();
+}

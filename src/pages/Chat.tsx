@@ -15,6 +15,17 @@ const REASONS: { value: ReportReason; label: string }[] = [
   { value: 'jine', label: 'Jiný důvod' },
 ];
 
+// Zabrání duplicitám, když zpráva dorazí současně přes REST i WebSocket.
+function mergeMessages(existing: ChatMessage[], incoming: ChatMessage[]): ChatMessage[] {
+  const byId = new Map(existing.map((message) => [message.id, message]));
+  for (const message of incoming) byId.set(message.id, message);
+  return [...byId.values()].sort((a, b) =>
+    new Date(a.at).getTime() - new Date(b.at).getTime()
+  );
+}
+
+type ChatEvent = { type: 'connected' } | { type: 'message:new'; message: ChatMessage };
+
 /** GET /chat – seznam shod a konverzace, s nahlášením a blokací. */
 export function Chat() {
   const { user } = useAuth();
@@ -34,50 +45,78 @@ export function Chat() {
     api.getMatches().then(setMatches).finally(() => setLoading(false));
   }, []);
 
-useEffect(() => {
-  if (!activeId) {
+  useEffect(() => {
+    if (!activeId || !user) {
+      setMessages([]);
+      return;
+    }
+
+    let stopped = false;
+    let ws: WebSocket | null = null;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let retryCount = 0;
+
     setMessages([]);
-    return;
-  }
-
-  let cancelled = false;
-  let inFlight = false;
-
-  setMessages([]);
-
-  const loadMessages = async () => {
-    if (cancelled || inFlight) return;
-
-    inFlight = true;
-
-    try {
-      const data = await api.getMessages(activeId);
-
-      if (!cancelled) {
-        setMessages(data);
+    const refresh = async () => {
+      try {
+        const history = await api.getMessages(activeId);
+        if (!stopped) setMessages((prev) => mergeMessages(prev, history));
+      } catch (error) {
+        if (!stopped) console.error('Historie chatu:', error);
       }
-    } catch (error) {
-      if (!cancelled) {
-        console.error('Chyba načítání zpráv:', error);
+    };
+
+    const connect = () => {
+      if (stopped) return;
+      try {
+        ws = new WebSocket(api.websocketUrl());
+      } catch (error) {
+        console.error('WebSocket nelze otevřít:', error);
+        scheduleReconnect();
+        return;
       }
-    } finally {
-      inFlight = false;
-    }
-  };
+      ws.onopen = () => {
+        retryCount = 0;
+        // Po výpadku znovu dotáhne zprávy, které mohly přijít offline.
+        void refresh();
+      };
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data) as ChatEvent;
+          if (data.type === 'message:new' && data.message.matchId === activeId) {
+            setMessages((prev) => mergeMessages(prev, [data.message]));
+          }
+        } catch (error) {
+          console.error('Neplatná WS událost:', error);
+        }
+      };
+      ws.onclose = () => { if (!stopped) scheduleReconnect(); };
+      ws.onerror = () => { ws?.close(); };
+    };
 
-  void loadMessages();
+    const scheduleReconnect = () => {
+      if (stopped || retryTimer !== undefined) return;
+      const delay = Math.min(1000 * 2 ** retryCount++, 15000);
+      retryTimer = setTimeout(() => {
+        retryTimer = undefined;
+        connect();
+      }, delay);
+    };
 
-  const interval = setInterval(() => {
-    if (document.visibilityState === 'visible') {
-      void loadMessages();
-    }
-  }, 2000);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void refresh();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    void refresh();
+    connect();
 
-  return () => {
-    cancelled = true;
-    clearInterval(interval);
-  };
-}, [activeId]);
+    return () => {
+      stopped = true;
+      document.removeEventListener('visibilitychange', onVisible);
+      if (retryTimer !== undefined) clearTimeout(retryTimer);
+      ws?.close();
+    };
+  }, [activeId, user?.id]);
 
   useEffect(() => {
     if (!toast) return;
@@ -88,9 +127,13 @@ useEffect(() => {
   const onSend = async (e: FormEvent) => {
     e.preventDefault();
     if (!active || !text.trim()) return;
-    const msg = await api.sendMessage(active.id, text);
-    setMessages((m) => [...m, msg]);
-    setText('');
+    try {
+      const msg = await api.sendMessage(active.id, text.trim());
+      setMessages((prev) => mergeMessages(prev, [msg]));
+      setText('');
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : 'Zprávu nelze odeslat.');
+    }
   };
 
   const confirmBlock = async () => {
