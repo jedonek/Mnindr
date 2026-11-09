@@ -34,9 +34,50 @@ export function Chat() {
     api.getMatches().then(setMatches).finally(() => setLoading(false));
   }, []);
 
-  useEffect(() => {
-    if (activeId) api.getMessages(activeId).then(setMessages);
-  }, [activeId]);
+useEffect(() => {
+  if (!activeId) {
+    setMessages([]);
+    return;
+  }
+
+  let cancelled = false;
+  let inFlight = false;
+
+  setMessages([]);
+
+  const loadMessages = async () => {
+    if (cancelled || inFlight) return;
+
+    inFlight = true;
+
+    try {
+      const data = await api.getMessages(activeId);
+
+      if (!cancelled) {
+        setMessages(data);
+      }
+    } catch (error) {
+      if (!cancelled) {
+        console.error('Chyba načítání zpráv:', error);
+      }
+    } finally {
+      inFlight = false;
+    }
+  };
+
+  void loadMessages();
+
+  const interval = setInterval(() => {
+    if (document.visibilityState === 'visible') {
+      void loadMessages();
+    }
+  }, 2000);
+
+  return () => {
+    cancelled = true;
+    clearInterval(interval);
+  };
+}, [activeId]);
 
   useEffect(() => {
     if (!toast) return;
