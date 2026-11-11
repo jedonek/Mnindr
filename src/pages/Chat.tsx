@@ -45,9 +45,111 @@ export function Chat() {
     api.getMatches().then(setMatches).finally(() => setLoading(false));
   }, []);
 
-  useEffect(() => {
-  if (activeId) api.getMessages(activeId).then(setMessages);
-}, [activeId]);
+  
+useEffect(() => {
+  if (!activeId || !user) {
+    setMessages([]);
+    return;
+  }
+
+  let stopped = false;
+  let ws: WebSocket | null = null;
+  let retryTimer: ReturnType<typeof setTimeout> | undefined;
+  let retryCount = 0;
+
+  setMessages([]);
+
+  const refresh = async () => {
+    try {
+      const history = await api.getMessages(activeId);
+
+      if (!stopped) {
+        setMessages((prev) => mergeMessages(prev, history));
+      }
+    } catch (error) {
+      if (!stopped) {
+        console.error('Historie chatu:', error);
+      }
+    }
+  };
+
+  const scheduleReconnect = () => {
+    if (stopped || retryTimer !== undefined) return;
+
+    const delay = Math.min(1000 * 2 ** retryCount++, 15000);
+
+    retryTimer = setTimeout(() => {
+      retryTimer = undefined;
+      connect();
+    }, delay);
+  };
+
+  const connect = () => {
+    if (stopped) return;
+
+    try {
+      ws = new WebSocket(api.websocketUrl());
+    } catch (error) {
+      console.error('WebSocket nelze otevřít:', error);
+      scheduleReconnect();
+      return;
+    }
+
+    ws.onopen = () => {
+      retryCount = 0;
+      void refresh();
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data) as ChatEvent;
+
+        if (
+          data.type === 'message:new' &&
+          data.message.matchId === activeId
+        ) {
+          setMessages((prev) =>
+            mergeMessages(prev, [data.message])
+          );
+        }
+      } catch (error) {
+        console.error('Neplatná WS událost:', error);
+      }
+    };
+
+    ws.onclose = () => {
+      if (!stopped) scheduleReconnect();
+    };
+
+    ws.onerror = () => {
+      ws?.close();
+    };
+  };
+
+  const onVisible = () => {
+    if (document.visibilityState === 'visible') {
+      void refresh();
+    }
+  };
+
+  document.addEventListener('visibilitychange', onVisible);
+
+  void refresh();
+  connect();
+
+  return () => {
+    stopped = true;
+
+    document.removeEventListener('visibilitychange', onVisible);
+
+    if (retryTimer !== undefined) {
+      clearTimeout(retryTimer);
+    }
+
+    ws?.close();
+  };
+}, [activeId, user?.id]);
+
 
   useEffect(() => {
     if (!toast) return;
