@@ -5,7 +5,7 @@ import { FaqList } from '@/components/ui/FaqList';
 import { Icon, type IconName } from '@/components/ui/Icon';
 import { Mascot, Sparkle } from '@/components/ui/Mascot';
 
-export const SUPPORT_EMAIL = 'podpora@mnindr.cz';
+export const SUPPORT_EMAIL = 'mnindr@seznam.cz';
 
 const CATEGORY_CARDS: { id: FaqCategory; icon: IconName; text: string; cta: string }[] = [
   { id: 'ucet', icon: 'user', text: 'Heslo, ověření i úpravy profilu. Najdi cestu zpátky ke svému účtu.', cta: 'Nápověda k účtu' },
