@@ -123,25 +123,44 @@ useEffect(() => {
 
   return (
     <div className="chat">
-      <nav className="chat__list" aria-label="Shody">
-        {matches.map((m) => (
-          <Link
-            key={m.id}
-            to={`/chat?match=${m.id}`}
-            className="chat__item"
-            aria-current={m.id === activeId ? 'true' : undefined}
-          >
-            <Avatar name={m.profile.nickname} photo={m.profile.photo} background={m.profile.photoBg} />
-            <strong>{m.profile.nickname}</strong>
-          </Link>
-        ))}
-      </nav>
+      <aside className="chat__sidebar">
+        <div className="chat__list-heading">
+          <div>
+            <p className="chat__eyebrow">Mňindr</p>
+            <h2> zprávy</h2>
+          </div>
+          <span className="chat__count" aria-label={`${matches.length} shod`}>{matches.length}</span>
+        </div>
+        <nav className="chat__list" aria-label="Shody">
+          {matches.map((m) => (
+            <Link
+              key={m.id}
+              to={`/chat?match=${m.id}`}
+              className="chat__item"
+              aria-current={m.id === activeId ? 'true' : undefined}
+            >
+              <Avatar name={m.profile.nickname} photo={m.profile.photo} background={m.profile.photoBg} />
+              <span className="chat__item-copy">
+                <strong>{m.profile.nickname}</strong>
+                <span className="chat__item-preview">Otevřít konverzaci</span>
+              </span>
+              <span className="chat__item-arrow" aria-hidden="true">›</span>
+            </Link>
+          ))}
+        </nav>
+      </aside>
 
       {active && user && (
         <section className="card chat__panel" aria-label={`Chat s ${active.profile.nickname}`}>
           <div className="chat__head">
-            <strong>{active.profile.nickname}</strong>
-            <div className="row">
+            <div className="chat__person">
+              <Avatar name={active.profile.nickname} photo={active.profile.photo} background={active.profile.photoBg} />
+              <div>
+                <strong>{active.profile.nickname}</strong>
+                <span className="chat__head-subtitle">Vaše konverzace</span>
+              </div>
+            </div>
+            <div className="chat__actions">
               <Button small variant="ghost" onClick={() => setDialog('report')}>
                 Nahlásit
               </Button>
@@ -151,11 +170,20 @@ useEffect(() => {
             </div>
           </div>
           <div className="chat__messages" aria-live="polite">
-            {messages.length === 0 && <p className="muted center">Prolom ledy a napiš první mňau!</p>}
+            {messages.length === 0 && (
+              <div className="chat__empty">
+                <span className="chat__empty-icon" aria-hidden="true">✦</span>
+                <strong>Začněte konverzaci</strong>
+                <p>Prolom ledy a napiš první mňau!</p>
+              </div>
+            )}
             {messages.map((m) => (
-              <span key={m.id} className={m.fromId === user.id ? 'bubble bubble--me' : 'bubble'}>
-                {m.text}
-              </span>
+              <div key={m.id} className={`chat__message ${m.fromId === user.id ? 'chat__message--me' : 'chat__message--them'}`}>
+                <div className="bubble">{m.text}</div>
+                <time className="chat__time" dateTime={m.at}>
+                  {new Intl.DateTimeFormat('cs-CZ', { hour: '2-digit', minute: '2-digit' }).format(new Date(m.at))}
+                </time>
+              </div>
             ))}
           </div>
           <form className="chat__form" onSubmit={onSend}>
