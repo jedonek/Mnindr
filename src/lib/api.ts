@@ -1,4 +1,4 @@
-import type {ChatMessage,MatchWithProfile,Preferences,Profile,RegisterBasics,RegisterPetInfo,ReportReason,SessionUser,SwipeRequest,SwipeResponse} from '@/types';
+import type {ChatMessage,MatchProfileDetails,MatchWithProfile,Preferences,Profile,RegisterBasics,RegisterPetInfo,ReportReason,SessionUser,SwipeRequest,SwipeResponse} from '@/types';
 export class ApiError extends Error { constructor(public code:string,message:string){super(message);} }
 const BASE=(import.meta.env.VITE_API_URL||'').replace(/\/$/,'');
 async function request<T>(path:string,method='GET',body?:unknown):Promise<T>{
@@ -22,5 +22,8 @@ export const resetSwipes=()=>request<void>('/swipes','DELETE');
 export const getMatches=()=>request<MatchWithProfile[]>('/matches');
 export const getMessages=(matchId:string)=>request<ChatMessage[]>(`/matches/${encodeURIComponent(matchId)}/messages`);
 export const sendMessage=(matchId:string,text:string)=>request<ChatMessage>(`/matches/${encodeURIComponent(matchId)}/messages`,'POST',{text});
+export const getMatchProfile=(matchId:string)=>request<MatchProfileDetails>(`/matches/${encodeURIComponent(matchId)}/profile`);
+export const setTyping=(matchId:string,typing:boolean)=>request<void>(`/matches/${encodeURIComponent(matchId)}/typing`,'POST',{typing});
+export const getPeerTyping=(matchId:string)=>request<{typing:boolean}>(`/matches/${encodeURIComponent(matchId)}/typing`);
 export const blockUser=(id:string)=>request<void>(`/users/${encodeURIComponent(id)}/block`,'POST');
 export const reportUser=(id:string,reason:ReportReason)=>request<void>(`/users/${encodeURIComponent(id)}/report`,'POST',{reason});

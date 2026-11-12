@@ -1,11 +1,12 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
 import * as api from '@/lib/api';
 import { Avatar } from '@/components/ui/Avatar';
 import { Button } from '@/components/ui/Button';
 import { Modal } from '@/components/ui/Modal';
-import type { ChatMessage, MatchWithProfile, ReportReason } from '@/types';
+import type { ChatMessage, MatchProfileDetails, MatchWithProfile, ReportReason } from '@/types';
+import { GOAL_LABELS, SEEKING_LABELS } from '@/data/seed';
 
 const REASONS: { value: ReportReason; label: string }[] = [
   { value: 'obtezovani', label: 'Obtěžování nebo urážky' },
@@ -26,6 +27,17 @@ export function Chat() {
   const [dialog, setDialog] = useState<'report' | 'block' | null>(null);
   const [reason, setReason] = useState<ReportReason>('obtezovani');
   const [toast, setToast] = useState<string | null>(null);
+  const [peerTyping, setPeerTyping] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [profileLoading, setProfileLoading] = useState(false);
+  const [profileError, setProfileError] = useState<string | null>(null);
+  const [peerProfile, setPeerProfile] = useState<MatchProfileDetails | null>(null);
+  const messagesElement = useRef<HTMLDivElement>(null);
+  const messagesRef = useRef<ChatMessage[]>([]);
+  const initialLoadRef = useRef(true);
+  const scrollPendingRef = useRef(false);
+  const typingHeartbeatRef = useRef<number | null>(null);
+  const typingIdleRef = useRef<number | null>(null);
 
   const activeId = params.get('match') ?? matches[0]?.id;
   const active = matches.find((m) => m.id === activeId);
@@ -37,6 +49,8 @@ export function Chat() {
 useEffect(() => {
   if (!activeId) {
     setMessages([]);
+    messagesRef.current = [];
+    setPeerTyping(false);
     return;
   }
 
@@ -44,6 +58,9 @@ useEffect(() => {
   let inFlight = false;
 
   setMessages([]);
+  messagesRef.current = [];
+  initialLoadRef.current = true;
+  setPeerTyping(false);
 
   const loadMessages = async () => {
     if (cancelled || inFlight) return;
@@ -54,6 +71,12 @@ useEffect(() => {
       const data = await api.getMessages(activeId);
 
       if (!cancelled) {
+        const viewport = messagesElement.current;
+        const nearBottom = !viewport || viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 80;
+        const hasNewMessages = data.some((message) => !messagesRef.current.some((current) => current.id === message.id));
+        if (initialLoadRef.current || (hasNewMessages && nearBottom)) scrollPendingRef.current = true;
+        initialLoadRef.current = false;
+        messagesRef.current = data;
         setMessages(data);
       }
     } catch (error) {
@@ -76,8 +99,44 @@ useEffect(() => {
   return () => {
     cancelled = true;
     clearInterval(interval);
+    if (typingHeartbeatRef.current !== null) window.clearInterval(typingHeartbeatRef.current);
+    if (typingIdleRef.current !== null) window.clearTimeout(typingIdleRef.current);
+    typingHeartbeatRef.current = null;
+    typingIdleRef.current = null;
+    void api.setTyping(activeId, false).catch(() => undefined);
   };
 }, [activeId]);
+
+  useEffect(() => {
+    if (!activeId) return;
+    let cancelled = false;
+    const loadTyping = async () => {
+      try {
+        const status = await api.getPeerTyping(activeId);
+        if (!cancelled) setPeerTyping(status.typing);
+      } catch {
+        if (!cancelled) setPeerTyping(false);
+      }
+    };
+    void loadTyping();
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void loadTyping();
+    }, 1800);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [activeId]);
+
+  useEffect(() => {
+    if (!messages.length || !scrollPendingRef.current) return;
+    const frame = window.requestAnimationFrame(() => {
+      const viewport = messagesElement.current;
+      if (viewport) viewport.scrollTop = viewport.scrollHeight;
+      scrollPendingRef.current = false;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [messages]);
 
   useEffect(() => {
     if (!toast) return;
@@ -89,8 +148,56 @@ useEffect(() => {
     e.preventDefault();
     if (!active || !text.trim()) return;
     const msg = await api.sendMessage(active.id, text);
-    setMessages((m) => [...m, msg]);
+    messagesRef.current = [...messagesRef.current, msg];
+    scrollPendingRef.current = true;
+    setMessages(messagesRef.current);
+    if (typingHeartbeatRef.current !== null) window.clearInterval(typingHeartbeatRef.current);
+    if (typingIdleRef.current !== null) window.clearTimeout(typingIdleRef.current);
+    typingHeartbeatRef.current = null;
+    typingIdleRef.current = null;
+    void api.setTyping(active.id, false).catch(() => undefined);
     setText('');
+  };
+
+  const onTextChange = (value: string) => {
+    setText(value);
+    if (!activeId) return;
+    if (!value.trim()) {
+      if (typingHeartbeatRef.current !== null) window.clearInterval(typingHeartbeatRef.current);
+      if (typingIdleRef.current !== null) window.clearTimeout(typingIdleRef.current);
+      typingHeartbeatRef.current = null;
+      typingIdleRef.current = null;
+      void api.setTyping(activeId, false).catch(() => undefined);
+      return;
+    }
+    if (typingHeartbeatRef.current === null) {
+      void api.setTyping(activeId, true).catch(() => undefined);
+      typingHeartbeatRef.current = window.setInterval(() => {
+        void api.setTyping(activeId, true).catch(() => undefined);
+      }, 2000);
+    }
+    if (typingIdleRef.current !== null) window.clearTimeout(typingIdleRef.current);
+    typingIdleRef.current = window.setTimeout(() => {
+      if (typingHeartbeatRef.current !== null) window.clearInterval(typingHeartbeatRef.current);
+      typingHeartbeatRef.current = null;
+      typingIdleRef.current = null;
+      void api.setTyping(activeId, false).catch(() => undefined);
+    }, 3500);
+  };
+
+  const openPeerProfile = async () => {
+    if (!active) return;
+    setProfileOpen(true);
+    setProfileLoading(true);
+    setProfileError(null);
+    setPeerProfile(null);
+    try {
+      setPeerProfile(await api.getMatchProfile(active.id));
+    } catch (error) {
+      setProfileError(error instanceof Error ? error.message : 'Profil se nepodařilo načíst.');
+    } finally {
+      setProfileLoading(false);
+    }
   };
 
   const confirmBlock = async () => {
@@ -155,10 +262,10 @@ useEffect(() => {
           <div className="chat__head">
             <div className="chat__person">
               <Avatar name={active.profile.nickname} photo={active.profile.photo} background={active.profile.photoBg} />
-              <div>
+              <button type="button" className="chat__profile-trigger" onClick={() => void openPeerProfile()} aria-label={`Zobrazit profil uživatele ${active.profile.nickname}`}>
                 <strong>{active.profile.nickname}</strong>
-                <span className="chat__head-subtitle">Vaše konverzace</span>
-              </div>
+                <span className="chat__head-subtitle">{peerTyping ? `${active.profile.nickname} píše…` : 'Zobrazit profil a preference'}</span>
+              </button>
             </div>
             <div className="chat__actions">
               <Button small variant="ghost" onClick={() => setDialog('report')}>
@@ -169,7 +276,7 @@ useEffect(() => {
               </Button>
             </div>
           </div>
-          <div className="chat__messages" aria-live="polite">
+          <div className="chat__messages" aria-live="polite" ref={messagesElement}>
             {messages.length === 0 && (
               <div className="chat__empty">
                 <span className="chat__empty-icon" aria-hidden="true">✦</span>
@@ -185,6 +292,13 @@ useEffect(() => {
                 </time>
               </div>
             ))}
+            {peerTyping && (
+              <div className="chat__typing" role="status" aria-label={`${active.profile.nickname} píše`}>
+                <span aria-hidden="true">{active.profile.gender === 'kocka' ? '🐈' : '🐈‍⬛'}</span>
+                <span className="chat__typing-dots" aria-hidden="true"><i /><i /><i /></span>
+                <span className="sr-only">{active.profile.nickname} píše</span>
+              </div>
+            )}
           </div>
           <form className="chat__form" onSubmit={onSend}>
             <label htmlFor="chat-input" className="sr-only">
@@ -195,7 +309,7 @@ useEffect(() => {
               className="input"
               placeholder="Napiš zprávu…"
               value={text}
-              onChange={(e) => setText(e.target.value)}
+              onChange={(e) => onTextChange(e.target.value)}
               autoComplete="off"
             />
             <Button type="submit" disabled={!text.trim()}>
@@ -203,6 +317,25 @@ useEffect(() => {
             </Button>
           </form>
         </section>
+      )}
+
+      {profileOpen && active && (
+        <Modal title={`Profil uživatele ${active.profile.nickname}`} onClose={() => setProfileOpen(false)} actions={<Button variant="ghost" onClick={() => setProfileOpen(false)}>Zavřít</Button>}>
+          {profileLoading && <p className="muted" role="status">Načítám profil…</p>}
+          {profileError && <p className="form-error" role="alert">{profileError}</p>}
+          {peerProfile && (
+            <div className="chat__profile-details">
+              <div className="chat__profile-summary">
+                <Avatar name={peerProfile.nickname} photo={peerProfile.photo} background={peerProfile.photoBg} />
+                <div><strong>{peerProfile.nickname}, {peerProfile.age}</strong><span>{peerProfile.gender === 'kocka' ? 'Kočka' : 'Kocour'} · {peerProfile.residence || 'Bydliště neuvedeno'}</span></div>
+              </div>
+              <section><h3>O mně</h3><p>{peerProfile.bio || 'Zatím bez popisku.'}</p><p>{peerProfile.verified ? 'Ověřený profil' : 'Neověřený profil'}</p></section>
+              <section><h3>Zájmy a rande</h3><p><strong>Sporty:</strong> {peerProfile.sports?.join(', ') || 'Neuvedeno'}</p><p><strong>Oblíbené barvy:</strong> {peerProfile.colors?.join(', ') || 'Neuvedeno'}</p><p><strong>Vysněné rande:</strong> {peerProfile.dreamDate || 'Neuvedeno'}</p></section>
+              <section><h3>Preference</h3><p><strong>Hledá:</strong> {SEEKING_LABELS[peerProfile.prefs.seeking]}</p><p><strong>Věk:</strong> {peerProfile.prefs.ageMin}–{peerProfile.prefs.ageMax} let · <strong>Vzdálenost:</strong> do {peerProfile.prefs.maxDistance} km</p><p><strong>Oblast:</strong> {peerProfile.prefs.area || 'Neuvedeno'}</p><p><strong>Vztah:</strong> {GOAL_LABELS[peerProfile.prefs.goal]}</p><p><strong>První rande:</strong> {peerProfile.prefs.firstDate}</p><p><strong>Kdy se potkat:</strong> {peerProfile.prefs.whenMeet}</p><p><strong>Aktivity:</strong> {peerProfile.prefs.activities}</p><p><strong>Hudba:</strong> {peerProfile.prefs.music}</p><p><strong>Kouření:</strong> {peerProfile.prefs.smoking}</p><p>{peerProfile.prefs.onlyVerified ? 'Chce poznávat pouze ověřené profily' : 'Nevyžaduje ověřený profil'}</p></section>
+              <p className="chat__profile-privacy">Kontaktní údaje, jako telefon a e-mail, zůstávají soukromé.</p>
+            </div>
+          )}
+        </Modal>
       )}
 
       {dialog === 'block' && active && (
