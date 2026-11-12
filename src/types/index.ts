@@ -99,6 +99,14 @@ export interface MatchWithProfile extends Match {
   profile: Profile;
 }
 
+/** Additional profile details visible only to an existing match. */
+export interface MatchProfileDetails extends Profile {
+  sports: string[];
+  colors: string[];
+  dreamDate: string;
+  prefs: Preferences;
+}
+
 export interface ChatMessage {
   id: string;
   matchId: string;
