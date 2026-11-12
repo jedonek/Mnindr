@@ -15,5 +15,11 @@ CREATE TABLE IF NOT EXISTS swipes (user_id uuid NOT NULL REFERENCES users(id) ON
 CREATE TABLE IF NOT EXISTS matches (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), user_a uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE, user_b uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE, created_at timestamptz NOT NULL DEFAULT now(), UNIQUE(user_a,user_b), CHECK(user_a<user_b));
 CREATE TABLE IF NOT EXISTS messages (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), match_id uuid NOT NULL REFERENCES matches(id) ON DELETE CASCADE, from_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE, text text NOT NULL CHECK(length(text) BETWEEN 1 AND 2000), created_at timestamptz NOT NULL DEFAULT now());
 CREATE INDEX IF NOT EXISTS messages_match_idx ON messages(match_id,created_at);
+CREATE TABLE IF NOT EXISTS typing_activity (
+ match_id uuid NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
+ user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+ updated_at timestamptz NOT NULL DEFAULT now(),
+ PRIMARY KEY(match_id,user_id)
+);
 CREATE TABLE IF NOT EXISTS blocks (user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE, target_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE, created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(user_id,target_id), CHECK(user_id<>target_id));
 CREATE TABLE IF NOT EXISTS reports (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), reporter_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE, target_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE, reason text NOT NULL CHECK(reason IN ('spam','obtezovani','falesny-profil','nevhodny-obsah','jine')), created_at timestamptz NOT NULL DEFAULT now(), CHECK(reporter_id<>target_id));

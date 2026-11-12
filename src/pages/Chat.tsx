@@ -5,7 +5,13 @@ import * as api from '@/lib/api';
 import { Avatar } from '@/components/ui/Avatar';
 import { Button } from '@/components/ui/Button';
 import { Modal } from '@/components/ui/Modal';
+<<<<<<< HEAD
 import type { ChatMessage, MatchWithProfile, ReportReason } from '@/types';
+=======
+import type { ChatMessage, MatchProfileDetails, MatchWithProfile, ReportReason } from '@/types';
+import { GOAL_LABELS, SEEKING_LABELS } from '@/data/seed';
+
+>>>>>>> df29846a93bd56033ed1e16541bc833070dd49ae
 const REASONS: { value: ReportReason; label: string }[] = [
   { value: 'obtezovani', label: 'Obtěžování nebo urážky' },
   { value: 'falesny-profil', label: 'Falešný profil' },
@@ -36,10 +42,25 @@ export function Chat() {
   const [dialog, setDialog] = useState<'report' | 'block' | null>(null);
   const [reason, setReason] = useState<ReportReason>('obtezovani');
   const [toast, setToast] = useState<string | null>(null);
+<<<<<<< HEAD
   const [otherTyping, setOtherTyping] = useState(false);
+=======
+  const [peerTyping, setPeerTyping] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [profileLoading, setProfileLoading] = useState(false);
+  const [profileError, setProfileError] = useState<string | null>(null);
+  const [peerProfile, setPeerProfile] = useState<MatchProfileDetails | null>(null);
+  const messagesElement = useRef<HTMLDivElement>(null);
+  const messagesRef = useRef<ChatMessage[]>([]);
+  const initialLoadRef = useRef(true);
+  const scrollPendingRef = useRef(false);
+  const typingHeartbeatRef = useRef<number | null>(null);
+  const typingIdleRef = useRef<number | null>(null);
+>>>>>>> df29846a93bd56033ed1e16541bc833070dd49ae
 
   const activeId = params.get('match') ?? matches[0]?.id;
   const active = matches.find((m) => m.id === activeId);
+  const currentUserId = user?.id;
 
   const messagesRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -48,6 +69,7 @@ export function Chat() {
   const typingStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const typingExpiryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+<<<<<<< HEAD
   const sendTyping = (matchId: string, isTyping: boolean) => {
     const socket = wsRef.current;
     if (socket?.readyState !== WebSocket.OPEN) return false;
@@ -101,25 +123,63 @@ export function Chat() {
     setOtherTyping(false);
     stayAtBottomRef.current = true;
     if (typingExpiryRef.current) clearTimeout(typingExpiryRef.current);
+=======
+  useEffect(() => {
+    if (!activeId || !currentUserId) {
+      setMessages([]);
+      messagesRef.current = [];
+      setPeerTyping(false);
+      return;
+    }
+
+    let stopped = false;
+    let ws: WebSocket | null = null;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let retryCount = 0;
+
+    setMessages([]);
+    messagesRef.current = [];
+    initialLoadRef.current = true;
+    setPeerTyping(false);
+>>>>>>> df29846a93bd56033ed1e16541bc833070dd49ae
 
     const refresh = async () => {
       try {
         const history = await api.getMessages(activeId);
+<<<<<<< HEAD
         if (!stopped) {
           setMessages(prev => mergeMessages(prev, history));
+=======
+        if (stopped) return;
+
+        const previous = messagesRef.current;
+        const merged = mergeMessages(previous, history);
+        const viewport = messagesElement.current;
+        const nearBottom = !viewport || viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 80;
+        if (initialLoadRef.current || (merged.length > previous.length && nearBottom)) {
+          scrollPendingRef.current = true;
+>>>>>>> df29846a93bd56033ed1e16541bc833070dd49ae
         }
+        initialLoadRef.current = false;
+        messagesRef.current = merged;
+        setMessages(merged);
       } catch (error) {
         if (!stopped) console.error('Historie chatu:', error);
       }
     };
 
+<<<<<<< HEAD
     function scheduleReconnect() {
+=======
+    const scheduleReconnect = () => {
+>>>>>>> df29846a93bd56033ed1e16541bc833070dd49ae
       if (stopped || retryTimer !== undefined) return;
       const delay = Math.min(1000 * 2 ** retryCount++, 15000);
       retryTimer = setTimeout(() => {
         retryTimer = undefined;
         connect();
       }, delay);
+<<<<<<< HEAD
     }
 
     function connect() {
@@ -128,16 +188,109 @@ export function Chat() {
       try {
         current = new WebSocket(api.websocketUrl());
         wsRef.current = current;
+=======
+    };
+
+    const connect = () => {
+      if (stopped) return;
+      try {
+        ws = new WebSocket(api.websocketUrl());
+>>>>>>> df29846a93bd56033ed1e16541bc833070dd49ae
       } catch (error) {
         console.error('WebSocket nelze otevřít:', error);
         scheduleReconnect();
         return;
       }
+<<<<<<< HEAD
 
       current.onopen = () => {
         retryCount = 0;
         void refresh();
       };
+=======
+
+      ws.onopen = () => {
+        retryCount = 0;
+        void refresh();
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data) as ChatEvent;
+          if (data.type !== 'message:new' || data.message.matchId !== activeId) return;
+
+          const previous = messagesRef.current;
+          const merged = mergeMessages(previous, [data.message]);
+          if (merged.length > previous.length) {
+            const viewport = messagesElement.current;
+            if (!viewport || viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 80) {
+              scrollPendingRef.current = true;
+            }
+          }
+          messagesRef.current = merged;
+          setMessages(merged);
+        } catch (error) {
+          console.error('Neplatná WS událost:', error);
+        }
+      };
+
+      ws.onclose = () => {
+        if (!stopped) scheduleReconnect();
+      };
+      ws.onerror = () => ws?.close();
+    };
+
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void refresh();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    void refresh();
+    connect();
+
+    return () => {
+      stopped = true;
+      document.removeEventListener('visibilitychange', onVisible);
+      if (retryTimer !== undefined) clearTimeout(retryTimer);
+      ws?.close();
+      if (typingHeartbeatRef.current !== null) window.clearInterval(typingHeartbeatRef.current);
+      if (typingIdleRef.current !== null) window.clearTimeout(typingIdleRef.current);
+      typingHeartbeatRef.current = null;
+      typingIdleRef.current = null;
+      void api.setTyping(activeId, false).catch(() => undefined);
+    };
+  }, [activeId, currentUserId]);
+
+  useEffect(() => {
+    if (!activeId || !currentUserId) return;
+    let stopped = false;
+    const refreshTyping = async () => {
+      try {
+        const status = await api.getPeerTyping(activeId);
+        if (!stopped) setPeerTyping(status.typing);
+      } catch {
+        if (!stopped) setPeerTyping(false);
+      }
+    };
+    void refreshTyping();
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void refreshTyping();
+    }, 1800);
+    return () => {
+      stopped = true;
+      window.clearInterval(interval);
+    };
+  }, [activeId, currentUserId]);
+
+  useEffect(() => {
+    if (!scrollPendingRef.current) return;
+    const frame = window.requestAnimationFrame(() => {
+      const viewport = messagesElement.current;
+      if (viewport) viewport.scrollTop = viewport.scrollHeight;
+      scrollPendingRef.current = false;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [messages]);
+>>>>>>> df29846a93bd56033ed1e16541bc833070dd49ae
 
       current.onmessage = event => {
         try {
@@ -209,7 +362,53 @@ export function Chat() {
   const onSend = async (e: FormEvent) => {
     e.preventDefault();
     if (!active || !text.trim()) return;
+    const msg = await api.sendMessage(active.id, text);
+    const merged = mergeMessages(messagesRef.current, [msg]);
+    messagesRef.current = merged;
+    scrollPendingRef.current = true;
+    setMessages(merged);
+    if (typingHeartbeatRef.current !== null) window.clearInterval(typingHeartbeatRef.current);
+    if (typingIdleRef.current !== null) window.clearTimeout(typingIdleRef.current);
+    typingHeartbeatRef.current = null;
+    typingIdleRef.current = null;
+    void api.setTyping(active.id, false).catch(() => undefined);
+    setText('');
+  };
+
+  const onTextChange = (value: string) => {
+    setText(value);
+    if (!activeId) return;
+    if (!value.trim()) {
+      if (typingHeartbeatRef.current !== null) window.clearInterval(typingHeartbeatRef.current);
+      if (typingIdleRef.current !== null) window.clearTimeout(typingIdleRef.current);
+      typingHeartbeatRef.current = null;
+      typingIdleRef.current = null;
+      void api.setTyping(activeId, false).catch(() => undefined);
+      return;
+    }
+    if (typingHeartbeatRef.current === null) {
+      void api.setTyping(activeId, true).catch(() => undefined);
+      typingHeartbeatRef.current = window.setInterval(() => {
+        void api.setTyping(activeId, true).catch(() => undefined);
+      }, 2000);
+    }
+    if (typingIdleRef.current !== null) window.clearTimeout(typingIdleRef.current);
+    typingIdleRef.current = window.setTimeout(() => {
+      if (typingHeartbeatRef.current !== null) window.clearInterval(typingHeartbeatRef.current);
+      typingHeartbeatRef.current = null;
+      typingIdleRef.current = null;
+      void api.setTyping(activeId, false).catch(() => undefined);
+    }, 3500);
+  };
+
+  const openPeerProfile = async () => {
+    if (!active) return;
+    setProfileOpen(true);
+    setProfileLoading(true);
+    setProfileError(null);
+    setPeerProfile(null);
     try {
+<<<<<<< HEAD
       const msg = await api.sendMessage(active.id, text.trim());
       stayAtBottomRef.current = true;
       setMessages((prev) => mergeMessages(prev, [msg]));
@@ -217,8 +416,13 @@ export function Chat() {
       if (typingStopTimerRef.current) clearTimeout(typingStopTimerRef.current);
       if (localTypingRef.current) sendTyping(active.id, false);
       localTypingRef.current = false;
+=======
+      setPeerProfile(await api.getMatchProfile(active.id));
+>>>>>>> df29846a93bd56033ed1e16541bc833070dd49ae
     } catch (error) {
-      setToast(error instanceof Error ? error.message : 'Zprávu nelze odeslat.');
+      setProfileError(error instanceof Error ? error.message : 'Profil se nepodařilo načíst.');
+    } finally {
+      setProfileLoading(false);
     }
   };
   const confirmBlock = async () => {
@@ -278,10 +482,10 @@ export function Chat() {
           <div className="chat__head">
             <div className="chat__person">
               <Avatar name={active.profile.nickname} photo={active.profile.photo} background={active.profile.photoBg} />
-              <div>
+              <button type="button" className="chat__profile-trigger" onClick={() => void openPeerProfile()} aria-label={`Zobrazit profil uživatele ${active.profile.nickname}`}>
                 <strong>{active.profile.nickname}</strong>
-                <span className="chat__head-subtitle">Vaše konverzace</span>
-              </div>
+                <span className="chat__head-subtitle">{peerTyping ? `${active.profile.nickname} píše…` : 'Zobrazit profil a preference'}</span>
+              </button>
             </div>
             <div className="chat__actions">
               <Button small variant="ghost" onClick={() => setDialog('report')}>
@@ -292,8 +496,13 @@ export function Chat() {
               </Button>
             </div>
           </div>
+<<<<<<< HEAD
           <div className="chat__messages" ref={messagesRef} onScroll={onMessagesScroll} aria-live="polite">
             {messages.length === 0 && !otherTyping && (
+=======
+          <div className="chat__messages" aria-live="polite" ref={messagesElement}>
+            {messages.length === 0 && (
+>>>>>>> df29846a93bd56033ed1e16541bc833070dd49ae
               <div className="chat__empty">
                 <span className="chat__empty-icon" aria-hidden="true">✦</span>
                 <strong>Začněte konverzaci</strong>
@@ -308,11 +517,19 @@ export function Chat() {
                 </time>
               </div>
             ))}
+<<<<<<< HEAD
             {otherTyping && (
               <div className="chat__message chat__message--them">
                 <div className="bubble chat__typing-bubble" role="status" aria-label={`${active.profile.nickname} právě píše`}>
                   <span aria-hidden="true" /><span aria-hidden="true" /><span aria-hidden="true" />
                 </div>
+=======
+            {peerTyping && (
+              <div className="chat__typing" role="status" aria-label={`${active.profile.nickname} píše`}>
+                <span aria-hidden="true">{active.profile.gender === 'kocka' ? '🐈' : '🐈‍⬛'}</span>
+                <span className="chat__typing-dots" aria-hidden="true"><i /><i /><i /></span>
+                <span className="sr-only">{active.profile.nickname} píše</span>
+>>>>>>> df29846a93bd56033ed1e16541bc833070dd49ae
               </div>
             )}
           </div>
@@ -334,6 +551,29 @@ export function Chat() {
           </form>
         </section>
       )}
+<<<<<<< HEAD
+=======
+
+      {profileOpen && active && (
+        <Modal title={`Profil uživatele ${active.profile.nickname}`} onClose={() => setProfileOpen(false)} actions={<Button variant="ghost" onClick={() => setProfileOpen(false)}>Zavřít</Button>}>
+          {profileLoading && <p className="muted" role="status">Načítám profil…</p>}
+          {profileError && <p className="form-error" role="alert">{profileError}</p>}
+          {peerProfile && (
+            <div className="chat__profile-details">
+              <div className="chat__profile-summary">
+                <Avatar name={peerProfile.nickname} photo={peerProfile.photo} background={peerProfile.photoBg} />
+                <div><strong>{peerProfile.nickname}, {peerProfile.age}</strong><span>{peerProfile.gender === 'kocka' ? 'Kočka' : 'Kocour'} · {peerProfile.residence || 'Bydliště neuvedeno'}</span></div>
+              </div>
+              <section><h3>O mně</h3><p>{peerProfile.bio || 'Zatím bez popisku.'}</p><p>{peerProfile.verified ? 'Ověřený profil' : 'Neověřený profil'}</p></section>
+              <section><h3>Zájmy a rande</h3><p><strong>Sporty:</strong> {peerProfile.sports?.join(', ') || 'Neuvedeno'}</p><p><strong>Oblíbené barvy:</strong> {peerProfile.colors?.join(', ') || 'Neuvedeno'}</p><p><strong>Vysněné rande:</strong> {peerProfile.dreamDate || 'Neuvedeno'}</p></section>
+              <section><h3>Preference</h3><p><strong>Hledá:</strong> {SEEKING_LABELS[peerProfile.prefs.seeking]}</p><p><strong>Věk:</strong> {peerProfile.prefs.ageMin}–{peerProfile.prefs.ageMax} let · <strong>Vzdálenost:</strong> do {peerProfile.prefs.maxDistance} km</p><p><strong>Oblast:</strong> {peerProfile.prefs.area || 'Neuvedeno'}</p><p><strong>Vztah:</strong> {GOAL_LABELS[peerProfile.prefs.goal]}</p><p><strong>První rande:</strong> {peerProfile.prefs.firstDate}</p><p><strong>Kdy se potkat:</strong> {peerProfile.prefs.whenMeet}</p><p><strong>Aktivity:</strong> {peerProfile.prefs.activities}</p><p><strong>Hudba:</strong> {peerProfile.prefs.music}</p><p><strong>Kouření:</strong> {peerProfile.prefs.smoking}</p><p>{peerProfile.prefs.onlyVerified ? 'Chce poznávat pouze ověřené profily' : 'Nevyžaduje ověřený profil'}</p></section>
+              <p className="chat__profile-privacy">Kontaktní údaje, jako telefon a e-mail, zůstávají soukromé.</p>
+            </div>
+          )}
+        </Modal>
+      )}
+
+>>>>>>> df29846a93bd56033ed1e16541bc833070dd49ae
       {dialog === 'block' && active && (
         <Modal
           title={`Zablokovat uživatele ${active.profile.nickname}?`}
