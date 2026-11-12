@@ -3,9 +3,12 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
+import cookie from 'cookie';
 import rateLimit from 'express-rate-limit';
 import bcrypt from 'bcryptjs';
 import crypto from 'node:crypto';
+import http from 'node:http';
+import { WebSocketServer, WebSocket } from 'ws';
 import nodemailer from 'nodemailer';
 import {q} from './db.js';
 const app=express(); app.set('trust proxy',1);
@@ -27,7 +30,7 @@ const uuid=x=>typeof x==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 const getUser=async id=>(await q(`SELECT ${userFields} FROM users WHERE id=$1`,[id])).rows[0];
 app.get('/api/health',(_req,res)=>res.json({ok:true}));
 app.get('/api/me',wrap(async(req,res)=>{const token=req.cookies.mnindr_session;if(!token)return res.json(null);const r=await q('SELECT user_id FROM sessions WHERE token_hash=$1 AND expires_at>now()',[hash(token)]);res.json(r.rows[0]?await getUser(r.rows[0].user_id):null)}));
-app.post('/api/auth/register',limit,wrap(async(req,res)=>{const {basics={},pet={}}=req.body;const e=email(basics.email);if(!/^\S+@\S+\.\S+$/.test(e)||String(basics.password||'').length<8||!basics.acceptTerms||!String(pet.nickname||'').trim()||!['kocka','kocour'].includes(pet.gender)||!Number.isInteger(pet.age)||pet.age<1||pet.age>120)fail(400,'VALIDATION','Neplatné registrační údaje.');if(pet.photo&&!validPhoto(pet.photo))fail(400,'VALIDATION','Neplatná fotografie.');const pw=await bcrypt.hash(basics.password,12);let r;try{r=await q(`INSERT INTO users(email,password_hash,first_name,last_name,newsletter,nickname,age,gender,phone,photo,prefs) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,[e,pw,String(basics.firstName||'').trim().slice(0,100),String(basics.lastName||'').trim().slice(0,100),!!basics.newsletter,pet.nickname.trim().slice(0,100),pet.age,pet.gender,String(pet.phone ?? '').trim().slice(0,100),pet.photo||null,JSON.stringify({...defaults,seeking:pet.gender==='kocka'?'kocour':'kocka'})]);}catch(err){if(err.code==='23505')fail(409,'EMAIL_EXISTS','Tento e-mail už je zaregistrovaný.');throw err;}await session(res,r.rows[0].id);res.status(201).json(await getUser(r.rows[0].id));}));
+app.post('/api/auth/register',limit,wrap(async(req,res)=>{const {basics={},pet={}}=req.body;const e=email(basics.email);if(!/^\S+@\S+\.\S+$/.test(e)||String(basics.password||'').length<8||!basics.acceptTerms||!String(pet.nickname||'').trim()||!['kocka','kocour'].includes(pet.gender)||!Number.isInteger(pet.age)||pet.age<1||pet.age>120)fail(400,'VALIDATION','Neplatné registrační údaje.');if(pet.photo&&!validPhoto(pet.photo))fail(400,'VALIDATION','Neplatná fotografie.');const pw=await bcrypt.hash(basics.password,12);let r;try{r=await q(`INSERT INTO users(email,password_hash,first_name,last_name,newsletter,nickname,age,gender,phone,photo,prefs) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,[e,pw,String(basics.firstName||'').trim().slice(0,100),String(basics.lastName||'').trim().slice(0,100),!!basics.newsletter,pet.nickname.trim().slice(0,100),pet.age,pet.gender,String(pet.phone||'').slice(0,100),pet.photo||null,JSON.stringify({...defaults,seeking:pet.gender==='kocka'?'kocour':'kocka'})]);}catch(err){if(err.code==='23505')fail(409,'EMAIL_EXISTS','Tento e-mail už je zaregistrovaný.');throw err;}await session(res,r.rows[0].id);res.status(201).json(await getUser(r.rows[0].id));}));
 app.post('/api/auth/login',limit,wrap(async(req,res)=>{const r=await q('SELECT id,password_hash FROM users WHERE email=$1',[email(req.body.email)]);if(!r.rows[0]||!(await bcrypt.compare(String(req.body.password||''),r.rows[0].password_hash)))fail(401,'BAD_LOGIN','Nesprávný e-mail nebo heslo.');await session(res,r.rows[0].id);res.json(await getUser(r.rows[0].id));}));
 app.post('/api/auth/logout',wrap(async(req,res)=>{if(req.cookies.mnindr_session)await q('DELETE FROM sessions WHERE token_hash=$1',[hash(req.cookies.mnindr_session)]);res.clearCookie('mnindr_session',cookieOpts);res.json({ok:true});}));
 const resetKey=(code)=>hash(`${process.env.RESET_SECRET||'local-dev-secret'}:${code}`);
@@ -47,8 +50,69 @@ app.get('/api/matches/:id/messages',auth,wrap(async(req,res)=>{await accessMatch
 app.get('/api/matches/:id/profile',auth,wrap(async(req,res)=>{const match=await accessMatch(req.params.id,req.user.id);const otherId=match.user_a===req.user.id?match.user_b:match.user_a;const r=await q(`SELECT ${profileFields.replaceAll(',',',u.')},u.sports,u.colors,u.dream_date AS "dreamDate",u.prefs FROM users u WHERE u.id=$1`,[otherId]);if(!r.rows[0])fail(404,'NOT_FOUND','Profil nenalezen.');res.json({...r.rows[0],tags:[],distanceKm:0,prefs:{...defaults,...(r.rows[0].prefs||{})}});}));
 app.get('/api/matches/:id/typing',auth,wrap(async(req,res)=>{const match=await accessMatch(req.params.id,req.user.id);const otherId=match.user_a===req.user.id?match.user_b:match.user_a;const r=await q(`SELECT EXISTS(SELECT 1 FROM typing_activity WHERE match_id=$1 AND user_id=$2 AND updated_at>now()-interval '5 seconds') AS typing`,[req.params.id,otherId]);res.json({typing:r.rows[0].typing});}));
 app.post('/api/matches/:id/typing',auth,wrap(async(req,res)=>{await accessMatch(req.params.id,req.user.id);if(typeof req.body.typing!=='boolean')fail(400,'VALIDATION','Neplatný stav psaní.');if(req.body.typing)await q('INSERT INTO typing_activity(match_id,user_id,updated_at) VALUES($1,$2,now()) ON CONFLICT(match_id,user_id) DO UPDATE SET updated_at=now()',[req.params.id,req.user.id]);else await q('DELETE FROM typing_activity WHERE match_id=$1 AND user_id=$2',[req.params.id,req.user.id]);res.json({ok:true});}));
-app.post('/api/matches/:id/messages',auth,wrap(async(req,res)=>{await accessMatch(req.params.id,req.user.id);const msg=String(req.body.text||'').trim();if(!msg||msg.length>2000)fail(400,'VALIDATION','Zpráva musí mít 1–2000 znaků.');const r=await q('INSERT INTO messages(match_id,from_id,text) VALUES($1,$2,$3) RETURNING id,match_id AS "matchId",from_id AS "fromId",text,created_at AS at',[req.params.id,req.user.id,msg]);res.status(201).json(r.rows[0]);}));
+app.post('/api/matches/:id/messages',auth,wrap(async(req,res)=>{await accessMatch(req.params.id,req.user.id);const msg=String(req.body.text||'').trim();if(!msg||msg.length>2000)fail(400,'VALIDATION','Zpráva musí mít 1–2000 znaků.');const r=await q('INSERT INTO messages(match_id,from_id,text) VALUES($1,$2,$3) RETURNING id,match_id AS "matchId",from_id AS "fromId",text,created_at AS at',[req.params.id,req.user.id,msg]);const saved=r.rows[0];res.status(201).json(saved);notifyMatchParticipants(saved);}));
 app.post('/api/users/:id/block',auth,wrap(async(req,res)=>{if(!uuid(req.params.id)||req.params.id===req.user.id)fail(400,'VALIDATION','Neplatný profil.');await q('INSERT INTO blocks(user_id,target_id) VALUES($1,$2) ON CONFLICT DO NOTHING',[req.user.id,req.params.id]);res.json({ok:true});}));
 app.post('/api/users/:id/report',auth,wrap(async(req,res)=>{if(!uuid(req.params.id)||req.params.id===req.user.id||!['spam','obtezovani','falesny-profil','nevhodny-obsah','jine'].includes(req.body.reason))fail(400,'VALIDATION','Neplatné hlášení.');await q('INSERT INTO reports(reporter_id,target_id,reason) VALUES($1,$2,$3)',[req.user.id,req.params.id,req.body.reason]);res.json({ok:true});}));
 app.use((err,req,res,next)=>{console.error(err);res.status(err.status||500).json({code:err.code||'SERVER_ERROR',message:err.status?err.message:'Chyba serveru.'});});
-app.listen(Number(process.env.PORT||3001),'0.0.0.0',()=>console.log('Mňindr API listening'));
+// Jeden HTTP server obsluhuje REST i WebSocket na stejné Render službě.
+const server = http.createServer(app);
+const socketsByUser = new Map();
+const wss = new WebSocketServer({noServer: true, maxPayload: 1024});
+
+function addSocket(userId, ws) {
+  if (!socketsByUser.has(userId)) socketsByUser.set(userId, new Set());
+  socketsByUser.get(userId).add(ws);
+  ws.on('close', () => {
+    const group = socketsByUser.get(userId);
+    group?.delete(ws);
+    if (group?.size === 0) socketsByUser.delete(userId);
+  });
+  // Zprávy se posílají výhradně přes autorizovaný REST endpoint.
+  // WS slouží pro události, nikoliv pro přijímání klientských příkazů.
+  ws.on('message', () => ws.close(1008, 'Read-only socket'));
+}
+
+function notifyMatchParticipants(message) {
+  // Fire-and-forget s logováním: případná chyba WS nerozbije úspěšný POST.
+  void (async () => {
+    const r = await q('SELECT user_a,user_b FROM matches WHERE id=$1', [message.matchId]);
+    if (!r.rows[0]) return;
+    const payload = JSON.stringify({type:'message:new', message});
+    for (const userId of [r.rows[0].user_a, r.rows[0].user_b]) {
+      for (const ws of socketsByUser.get(userId) ?? []) {
+        if (ws.readyState === WebSocket.OPEN) ws.send(payload);
+      }
+    }
+  })().catch(err => console.error('WebSocket delivery error:', err));
+}
+
+server.on('upgrade', (req, socket, head) => {
+  void (async () => {
+    const url = new URL(req.url || '/', 'http://localhost');
+    if (url.pathname !== '/api/ws') {socket.destroy();return;}
+    if (!req.headers.origin || !allowed.includes(req.headers.origin)) {socket.destroy();return;}
+    // Prohlížeč automaticky připojí session cookie; žádný token v URL.
+    const cookies = cookie.parse(req.headers.cookie || '');
+    const token = cookies.mnindr_session;
+    if (typeof token !== 'string') {socket.destroy();return;}
+    const r = await q('SELECT user_id FROM sessions WHERE token_hash=$1 AND expires_at>now()', [hash(token)]);
+    const userId = r.rows[0]?.user_id;
+    if (!userId || socket.destroyed) {socket.destroy();return;}
+    wss.handleUpgrade(req, socket, head, ws => {
+      ws.isAlive = true;
+      ws.on('pong', () => {ws.isAlive = true;});
+      addSocket(userId, ws);
+      ws.send(JSON.stringify({type:'connected'}));
+    });
+  })().catch(err => {console.error('WS upgrade failed:',err);socket.destroy();});
+});
+
+const heartbeat = setInterval(() => {
+  for (const ws of wss.clients) {
+    if (!ws.isAlive) {ws.terminate();continue;}
+    ws.isAlive = false;
+    ws.ping();
+  }
+}, 30000);
+heartbeat.unref();
+server.listen(Number(process.env.PORT||3001),'0.0.0.0',()=>console.log('Mňindr REST + WebSocket listening'));

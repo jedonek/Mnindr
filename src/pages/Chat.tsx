@@ -16,6 +16,17 @@ const REASONS: { value: ReportReason; label: string }[] = [
   { value: 'jine', label: 'Jiný důvod' },
 ];
 
+// Zabrání duplicitám, když zpráva dorazí současně přes REST i WebSocket.
+function mergeMessages(existing: ChatMessage[], incoming: ChatMessage[]): ChatMessage[] {
+  const byId = new Map(existing.map((message) => [message.id, message]));
+  for (const message of incoming) byId.set(message.id, message);
+  return [...byId.values()].sort((a, b) =>
+    new Date(a.at).getTime() - new Date(b.at).getTime()
+  );
+}
+
+type ChatEvent = { type: 'connected' } | { type: 'message:new'; message: ChatMessage };
+
 /** GET /chat – seznam shod a konverzace, s nahlášením a blokací. */
 export function Chat() {
   const { user } = useAuth();
@@ -41,95 +52,143 @@ export function Chat() {
 
   const activeId = params.get('match') ?? matches[0]?.id;
   const active = matches.find((m) => m.id === activeId);
+  const currentUserId = user?.id;
 
   useEffect(() => {
     api.getMatches().then(setMatches).finally(() => setLoading(false));
   }, []);
 
-useEffect(() => {
-  if (!activeId) {
+  useEffect(() => {
+    if (!activeId || !currentUserId) {
+      setMessages([]);
+      messagesRef.current = [];
+      setPeerTyping(false);
+      return;
+    }
+
+    let stopped = false;
+    let ws: WebSocket | null = null;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let retryCount = 0;
+
     setMessages([]);
     messagesRef.current = [];
+    initialLoadRef.current = true;
     setPeerTyping(false);
-    return;
-  }
 
-  let cancelled = false;
-  let inFlight = false;
+    const refresh = async () => {
+      try {
+        const history = await api.getMessages(activeId);
+        if (stopped) return;
 
-  setMessages([]);
-  messagesRef.current = [];
-  initialLoadRef.current = true;
-  setPeerTyping(false);
-
-  const loadMessages = async () => {
-    if (cancelled || inFlight) return;
-
-    inFlight = true;
-
-    try {
-      const data = await api.getMessages(activeId);
-
-      if (!cancelled) {
+        const previous = messagesRef.current;
+        const merged = mergeMessages(previous, history);
         const viewport = messagesElement.current;
         const nearBottom = !viewport || viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 80;
-        const hasNewMessages = data.some((message) => !messagesRef.current.some((current) => current.id === message.id));
-        if (initialLoadRef.current || (hasNewMessages && nearBottom)) scrollPendingRef.current = true;
+        if (initialLoadRef.current || (merged.length > previous.length && nearBottom)) {
+          scrollPendingRef.current = true;
+        }
         initialLoadRef.current = false;
-        messagesRef.current = data;
-        setMessages(data);
+        messagesRef.current = merged;
+        setMessages(merged);
+      } catch (error) {
+        if (!stopped) console.error('Historie chatu:', error);
       }
-    } catch (error) {
-      if (!cancelled) {
-        console.error('Chyba načítání zpráv:', error);
+    };
+
+    const scheduleReconnect = () => {
+      if (stopped || retryTimer !== undefined) return;
+      const delay = Math.min(1000 * 2 ** retryCount++, 15000);
+      retryTimer = setTimeout(() => {
+        retryTimer = undefined;
+        connect();
+      }, delay);
+    };
+
+    const connect = () => {
+      if (stopped) return;
+      try {
+        ws = new WebSocket(api.websocketUrl());
+      } catch (error) {
+        console.error('WebSocket nelze otevřít:', error);
+        scheduleReconnect();
+        return;
       }
-    } finally {
-      inFlight = false;
-    }
-  };
 
-  void loadMessages();
+      ws.onopen = () => {
+        retryCount = 0;
+        void refresh();
+      };
 
-  const interval = setInterval(() => {
-    if (document.visibilityState === 'visible') {
-      void loadMessages();
-    }
-  }, 2000);
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data) as ChatEvent;
+          if (data.type !== 'message:new' || data.message.matchId !== activeId) return;
 
-  return () => {
-    cancelled = true;
-    clearInterval(interval);
-    if (typingHeartbeatRef.current !== null) window.clearInterval(typingHeartbeatRef.current);
-    if (typingIdleRef.current !== null) window.clearTimeout(typingIdleRef.current);
-    typingHeartbeatRef.current = null;
-    typingIdleRef.current = null;
-    void api.setTyping(activeId, false).catch(() => undefined);
-  };
-}, [activeId]);
+          const previous = messagesRef.current;
+          const merged = mergeMessages(previous, [data.message]);
+          if (merged.length > previous.length) {
+            const viewport = messagesElement.current;
+            if (!viewport || viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 80) {
+              scrollPendingRef.current = true;
+            }
+          }
+          messagesRef.current = merged;
+          setMessages(merged);
+        } catch (error) {
+          console.error('Neplatná WS událost:', error);
+        }
+      };
+
+      ws.onclose = () => {
+        if (!stopped) scheduleReconnect();
+      };
+      ws.onerror = () => ws?.close();
+    };
+
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void refresh();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    void refresh();
+    connect();
+
+    return () => {
+      stopped = true;
+      document.removeEventListener('visibilitychange', onVisible);
+      if (retryTimer !== undefined) clearTimeout(retryTimer);
+      ws?.close();
+      if (typingHeartbeatRef.current !== null) window.clearInterval(typingHeartbeatRef.current);
+      if (typingIdleRef.current !== null) window.clearTimeout(typingIdleRef.current);
+      typingHeartbeatRef.current = null;
+      typingIdleRef.current = null;
+      void api.setTyping(activeId, false).catch(() => undefined);
+    };
+  }, [activeId, currentUserId]);
 
   useEffect(() => {
-    if (!activeId) return;
-    let cancelled = false;
-    const loadTyping = async () => {
+    if (!activeId || !currentUserId) return;
+    let stopped = false;
+    const refreshTyping = async () => {
       try {
         const status = await api.getPeerTyping(activeId);
-        if (!cancelled) setPeerTyping(status.typing);
+        if (!stopped) setPeerTyping(status.typing);
       } catch {
-        if (!cancelled) setPeerTyping(false);
+        if (!stopped) setPeerTyping(false);
       }
     };
-    void loadTyping();
+    void refreshTyping();
     const interval = window.setInterval(() => {
-      if (document.visibilityState === 'visible') void loadTyping();
+      if (document.visibilityState === 'visible') void refreshTyping();
     }, 1800);
     return () => {
-      cancelled = true;
+      stopped = true;
       window.clearInterval(interval);
     };
-  }, [activeId]);
+  }, [activeId, currentUserId]);
 
   useEffect(() => {
-    if (!messages.length || !scrollPendingRef.current) return;
+    if (!scrollPendingRef.current) return;
     const frame = window.requestAnimationFrame(() => {
       const viewport = messagesElement.current;
       if (viewport) viewport.scrollTop = viewport.scrollHeight;
@@ -148,9 +207,10 @@ useEffect(() => {
     e.preventDefault();
     if (!active || !text.trim()) return;
     const msg = await api.sendMessage(active.id, text);
-    messagesRef.current = [...messagesRef.current, msg];
+    const merged = mergeMessages(messagesRef.current, [msg]);
+    messagesRef.current = merged;
     scrollPendingRef.current = true;
-    setMessages(messagesRef.current);
+    setMessages(merged);
     if (typingHeartbeatRef.current !== null) window.clearInterval(typingHeartbeatRef.current);
     if (typingIdleRef.current !== null) window.clearTimeout(typingIdleRef.current);
     typingHeartbeatRef.current = null;
